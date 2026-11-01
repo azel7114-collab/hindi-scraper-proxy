@@ -21,6 +21,7 @@ import express from 'express';
 import { getMovieMeta, getTvMeta, getEpisodeMeta } from './lib/tmdb.js';
 import { resolveMovie, resolveTv, clearCache, getCacheStats } from './lib/scraper.js';
 import { renderEmbedPage } from './lib/embed.js';
+import * as allmovieland from './lib/sources/allmovieland.js';
 import * as fzmovies from './lib/sources/fzmovies.js';
 import * as bollyflix from './lib/sources/bollyflix.js';
 import * as moviesflix from './lib/sources/moviesflix.js';
@@ -30,7 +31,8 @@ import * as multiembed from './lib/sources/multiembed.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const ALL_SOURCES = [fzmovies, bollyflix, moviesflix, hiiduba, multiembed];
+// Order: primary first, fallbacks after
+const ALL_SOURCES = [allmovieland, multiembed, fzmovies, bollyflix, moviesflix, hiiduba];
 
 // CORS
 app.use((req, res, next) => {
