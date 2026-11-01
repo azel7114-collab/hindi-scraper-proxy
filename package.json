@@ -1,0 +1,19 @@
+{
+  "name": "hindi-scraper-proxy",
+  "version": "1.0.0",
+  "description": "Multi-source scraper proxy for Hindi/Bollywood movies + TV shows. Parallel scrapes Fzmovies, BollyFlix, MoviesFlix, Hiiduba — first success wins. Falls back to Multi-Embed (VidSrc, 2embed, etc.) if all fail. Built for corvique.site admin auto-attach.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-cache": "^5.1.2"
+  },
+  "license": "MIT"
+}
