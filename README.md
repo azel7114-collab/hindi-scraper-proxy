@@ -1,16 +1,15 @@
-# Hindi Scraper Proxy v2.0
+# Hindi Scraper Proxy v3.0
 
-Single URL that returns working movie/TV streams for any TMDB ID. **AllMovieLand** is the primary source — backend player used by Vegamovies, BollyFlix, Moviesflix, Hiiduba, etc.
+Single URL that returns **10+ working embed providers in parallel** for any TMDB ID. User sees all servers in player UI — first one that loads wins. Falls back to 4 Hindi site scrapers if all embeds fail.
 
-## Why v2 is much better than v1
+## Why v3 is the best
 
-| Aspect | v1 (old) | v2 (new) |
-|--------|---------|----------|
-| Primary source | Hindi site scrapers (4 sites, often blocked by Cloudflare) | **AllMovieLand** — backend player for all Hindi sites |
-| Method | Scrape search → scrape movie page → extract stream URL | **TMDB ID → IMDb ID → direct embed URL** |
-| Speed | 5-15s (multiple page fetches) | **<1s** (1 TMDB API call + 1 iframe URL) |
-| Reliability | Often fails (sites block scrapers) | **Highly reliable** (CDN-backed player) |
-| Maintenance | Weekly (sites change HTML) | **None** (no scraping) |
+| Aspect | v1 | v2 | v3 |
+|--------|----|----|----|
+| Primary source | 4 Hindi scrapers (often fail) | AllMovieLand only | **10 embed providers in parallel** |
+| Method | Site scraping | TMDB → IMDb → AllMovieLand | **All providers get URL, player shows all 10 servers** |
+| User choice | None | None | **Yes — user can switch server in player** |
+| Reliability | Low (Cloudflare blocks) | High (1 source) | **Very high (10 sources)** |
 
 ## Architecture
 
@@ -19,20 +18,47 @@ corvique form: https://your-proxy/embed/movie/{tmdb_id}
                     ↓
               TMDB API: tmdb_id → imdb_id
                     ↓
-              Build URL: https://slast430did.com/play/{imdb_id}
+              Build URLs for ALL 10 providers in parallel:
+                1. AllMovieLand   → https://slast430did.com/play/{imdb_id}
+                2. MultiEmbed IMDb → https://multiembed.mov/?video_id={imdb_id}
+                3. MultiEmbed TMDB → https://multiembed.mov/?video_id={tmdb_id}&tmdb=1
+                4. VidSrc.to      → https://vidsrc.to/embed/movie/{tmdb_id}
+                5. VidSrc.ru      → https://vidsrc.ru/embed/movie/{imdb_id}
+                6. 2embed.cc      → https://www.2embed.cc/embed/{tmdb_id}
+                7. SuperEmbed IMDb → https://superembed.stream/?video_id={imdb_id}
+                8. SuperEmbed TMDB → https://superembed.stream/?video_id={tmdb_id}&tmdb=1
+                9. VidSrc.pk      → https://embed.vidsrc.pk/movie/{tmdb_id}
+               10. Embed.su       → https://embed.su/embed/movie/{tmdb_id}
                     ↓
-              For TV:   ...?season={s}&episode={e}
+              Player UI shows "Server 1, 2, 3, ... 10" tabs
                     ↓
-              Return iframe HTML pointing to AllMovieLand player
+              User can click any server, or auto-fallback after 8s
                     ↓
-              corvique iframe loads → video plays
+              If ALL embeds fail → try Hindi site scrapers
 ```
 
-## Sources (in priority order)
+## Files
 
-1. **AllMovieLand** ⭐ PRIMARY — backend player for vegamovies/bollyflix/moviesflix/hiiduba
-2. **Multi-Embed** (Fallback) — VidSrc.pk, VidSrc.to, 2embed.cc, Embed.su, MultiEmbed
-3. **Hindi scrapers** (Last resort) — Fzmovies, BollyFlix, MoviesFlix, Hiiduba
+```
+hindi-scraper-proxy/
+├── server.js
+├── lib/
+│   ├── http.js
+│   ├── tmdb.js
+│   ├── scraper.js                # Orchestrator (all providers in parallel)
+│   ├── providers.js              # ⭐ NEW — 10 embed providers config
+│   ├── embed.js                  # Player UI with server switcher
+│   └── sources/
+│       ├── allmovieland.js       # Direct IMDb embed
+│       ├── multiembed.js         # Fallback (legacy)
+│       ├── fzmovies.js           # Hindi scraper (last resort)
+│       ├── bollyflix.js          # Hindi scraper (last resort)
+│       ├── moviesflix.js         # Hindi scraper (last resort)
+│       └── hiiduba.js            # Hindi scraper (last resort)
+├── package.json
+├── .env.example
+└── README.md
+```
 
 ## Quick Start (local)
 
@@ -46,9 +72,9 @@ npm start
 ```
 
 Open in browser:
-- http://localhost:3000/ → landing page
-- http://localhost:3000/embed/movie/550 → Fight Club
-- http://localhost:3000/embed/tv/1396/1/1 → Breaking Bad S1E1
+- http://localhost:3000/ → landing page (lists all 10 providers)
+- http://localhost:3000/embed/movie/550 → Fight Club (10 servers in player)
+- http://localhost:3000/embed/tv/1396/1/1 → Breaking Bad S1E1 (10 servers)
 - http://localhost:3000/probe/movie/550 → JSON debug
 
 ## Deploy on Render
@@ -76,72 +102,44 @@ Click **Save video source** → then **Attach to already imported titles** to ba
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/` | GET | Landing page with corvique form values |
+| `/` | GET | Landing page |
 | `/health` | GET | Health check |
-| `/sources` | GET | List of enabled sources (JSON) |
-| `/probe/movie/:tmdbId` | GET | JSON debug — which source found streams |
+| `/sources` | GET | List of all providers + scrapers |
+| `/probe/movie/:tmdbId` | GET | JSON debug |
 | `/probe/tv/:tmdbId/:season/:episode` | GET | JSON debug for TV |
-| `/embed/movie/:tmdbId` | GET | HTML player (auto-tries sources) |
-| `/embed/tv/:tmdbId/:season/:episode` | GET | HTML player for TV episode |
-| `/cache/stats` | GET | Cache statistics |
+| `/embed/movie/:tmdbId` | GET | HTML player (10 servers) |
+| `/embed/tv/:tmdbId/:season/:episode` | GET | HTML player for TV |
+| `/cache/stats` | GET | Cache stats |
 | `/cache/clear` | GET | Clear cache |
 
-## How AllMovieLand was discovered
+## How player auto-fallback works
 
-While inspecting Vegamovies' movie pages, I noticed they load an iframe from `slast430did.com` (which redirects to AllMovieLand's CDN). The URL pattern is:
+1. Player loads Server 1 (AllMovieLand) in iframe
+2. If load doesn't fire within 8 seconds → switch to Server 2
+3. Repeat for Server 3, 4, 5, ... 10
+4. User can also manually click any "Server N" tab
 
+## Adding more providers
+
+Edit `lib/providers.js`:
+
+```js
+{
+  id: 'newprovider',
+  name: 'NewProvider',
+  priority: 11,
+  movieTemplate: 'https://newprovider.com/movie/{tmdb_id}',
+  seriesTemplate: 'https://newprovider.com/tv/{tmdb_id}/{season}/{episode}',
+  supports: ['tmdb'],
+  note: 'New provider',
+},
 ```
-https://slast430did.com/play/{imdb_id}
-https://slast430did.com/play/{imdb_id}?season={s}&episode={e}  (TV)
-```
 
-This player:
-- Returns HTTP 200 with valid HTML
-- Has CORS `access-control-allow-origin: *`
-- Has NO `X-Frame-Options` or CSP — fully iframe-embeddable
-- Uses HLS.js for adaptive streaming
-- Supports both movies and TV shows via IMDb IDs
-
-The same backend is used by BollyFlix, Moviesflix, Hiiduba, and many other Hindi streaming sites — they all just embed AllMovieLand's player. So instead of scraping each one, we directly use the player.
-
-## Caching
-
-- TMDB metadata: cached **24h**
-- Stream URLs: cached **30 min** (configurable via `CACHE_TTL`)
-- Clear cache: `GET /cache/clear`
-
-## Files
-
-```
-hindi-scraper-proxy/
-├── server.js
-├── lib/
-│   ├── http.js
-│   ├── tmdb.js
-│   ├── scraper.js                  # Orchestrator (AllMovieLand first)
-│   ├── embed.js
-│   └── sources/
-│       ├── allmovieland.js         # ⭐ PRIMARY
-│       ├── multiembed.js           # FALLBACK
-│       ├── fzmovies.js             # Last resort
-│       ├── bollyflix.js            # Last resort
-│       ├── moviesflix.js           # Last resort
-│       └── hiiduba.js              # Last resort
-├── package.json
-├── .env.example
-└── README.md
-```
+Restart server — done.
 
 ## ⚠️ Legal & ethical use
 
-This proxy is a **technical bridge**. It does not host, store, or upload any content. The sites it links to aggregate third-party streams whose copyright status varies by jurisdiction.
-
-Before using in a public site:
-- Confirm you have legal streaming rights for the content
-- Respect DMCA / copyright takedown requests
-- For personal/home use, consider Plex + Jellyfin with your own media
-
-The maintainers of this proxy are not responsible for how you use it.
+This proxy is a technical bridge. It does not host any content. Use only with content you have legal rights to stream.
 
 ## License
 

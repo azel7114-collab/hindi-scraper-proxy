@@ -19,20 +19,18 @@
 
 import express from 'express';
 import { getMovieMeta, getTvMeta, getEpisodeMeta } from './lib/tmdb.js';
-import { resolveMovie, resolveTv, clearCache, getCacheStats } from './lib/scraper.js';
+import { resolveMovie, resolveTv, clearCache, getCacheStats, PROVIDERS } from './lib/scraper.js';
 import { renderEmbedPage } from './lib/embed.js';
-import * as allmovieland from './lib/sources/allmovieland.js';
 import * as fzmovies from './lib/sources/fzmovies.js';
 import * as bollyflix from './lib/sources/bollyflix.js';
 import * as moviesflix from './lib/sources/moviesflix.js';
 import * as hiiduba from './lib/sources/hiiduba.js';
-import * as multiembed from './lib/sources/multiembed.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Order: primary first, fallbacks after
-const ALL_SOURCES = [allmovieland, multiembed, fzmovies, bollyflix, moviesflix, hiiduba];
+// Hindi scrapers (last resort)
+const HINDI_SCRAPERS = [fzmovies, bollyflix, moviesflix, hiiduba];
 
 // CORS
 app.use((req, res, next) => {
@@ -55,12 +53,13 @@ app.get('/', (req, res) => {
   const host = req.headers.host || `localhost:${PORT}`;
   const base = `${proto}://${host}`;
 
-  const enabledSources = ALL_SOURCES.filter(s => s.enabled());
+  const enabledProviders = PROVIDERS;
+  const enabledScrapers = HINDI_SCRAPERS.filter(s => s.enabled());
 
   res.type('html').send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hindi Scraper Proxy</title>
+<title>Hindi Scraper Proxy v3</title>
 <style>
   body { font-family:system-ui,Segoe UI,Roboto,sans-serif; max-width:780px; margin:40px auto; padding:0 20px; color:#222; }
   h1 { color:#e50d75; margin-bottom:6px; }
@@ -74,8 +73,8 @@ app.get('/', (req, res) => {
   a { color:#e50d75; }
   .warn { background:#fef3c7; padding:12px; border-radius:6px; font-size:13px; margin-top:18px; }
 </style></head><body>
-<h1>Hindi Scraper Proxy <span class="badge">v1.0</span></h1>
-<p>Single URL that scrapes <strong>${enabledSources.length} Hindi movie sources in parallel</strong> and serves the first working stream. Falls back to Multi-Embed (VidSrc, 2embed, etc.) if all scrapers fail.</p>
+<h1>Hindi Scraper Proxy <span class="badge">v3.0</span></h1>
+<p>Single URL that returns <strong>${enabledProviders.length}+ working embed providers in parallel</strong> (AllMovieLand, MultiEmbed, VidSrc, 2embed, SuperEmbed, etc.). User sees all servers in player UI — first one that loads wins. Falls back to ${enabledScrapers.length} Hindi site scrapers if all embeds fail.</p>
 
 <h2>Paste these into corvique admin → Video source (auto-attach)</h2>
 <p><strong>Movie link:</strong></p>
@@ -83,10 +82,16 @@ app.get('/', (req, res) => {
 <p><strong>Series link:</strong></p>
 <code>${base}/embed/tv/{tmdb_id}/{season}/{episode}</code>
 
-<h2>Enabled Sources (tried in parallel)</h2>
+<h2>Embed Providers (all tried in parallel, user picks in player)</h2>
 <table>
-  <tr><th>#</th><th>Source</th><th>Type</th><th>Status</th></tr>
-  ${enabledSources.map((s, i) => `<tr><td>${i + 1}</td><td>${s.name}</td><td>${s.id === 'multiembed' ? 'Fallback' : 'Scraper'}</td><td><span class="badge ${s.id === 'multiembed' ? 'fallback' : ''}">enabled</span></td></tr>`).join('')}
+  <tr><th>#</th><th>Provider</th><th>ID Type</th><th>Priority</th></tr>
+  ${enabledProviders.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name}</td><td>${p.supports.join('/')}</td><td>${p.priority}</td></tr>`).join('')}
+</table>
+
+<h2>Hindi Site Scrapers (last resort if all embeds fail)</h2>
+<table>
+  <tr><th>#</th><th>Source</th><th>Enabled</th></tr>
+  ${enabledScrapers.map((s, i) => `<tr><td>${i + 1}</td><td>${s.name}</td><td><span class="badge">enabled</span></td></tr>`).join('')}
 </table>
 
 <h2>Test</h2>
@@ -97,8 +102,8 @@ app.get('/', (req, res) => {
 
 <h2>Debug</h2>
 <p>Probe all sources for a title (returns JSON with which source found what):</p>
-<code>${base}/probe/movie/9479</code><br>
-<code>${base}/probe/tv/1396/1/1</code>
+<code>${base}/probe/movie/550</code> <span style="color:#888">(Fight Club)</span><br>
+<code>${base}/probe/tv/1396/1/1</code> <span style="color:#888">(Breaking Bad S1E1)</span>
 
 <p style="margin-top:12px"><a href="/health">/health</a> · <a href="/sources">/sources</a> · <a href="/cache/stats">/cache/stats</a> · <a href="/cache/clear">/cache/clear</a></p>
 
@@ -115,18 +120,22 @@ app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     tmdb: !!process.env.TMDB_API_KEY,
-    sources: ALL_SOURCES.filter(s => s.enabled()).map(s => s.name),
+    embedProviders: PROVIDERS.map(p => p.name),
+    hindiScrapers: HINDI_SCRAPERS.filter(s => s.enabled()).map(s => s.name),
     uptime: process.uptime(),
   });
 });
 
 // ---- Sources list ----
 app.get('/sources', (_req, res) => {
-  res.json(ALL_SOURCES.map(s => ({
-    id: s.id,
-    name: s.name,
-    enabled: s.enabled(),
-  })));
+  res.json({
+    embedProviders: PROVIDERS,
+    hindiScrapers: HINDI_SCRAPERS.filter(s => s.enabled()).map(s => ({
+      id: s.id,
+      name: s.name,
+      enabled: s.enabled(),
+    })),
+  });
 });
 
 // ---- Probe (debug) ----
@@ -252,8 +261,10 @@ app.listen(PORT, () => {
   console.log(`  Hindi Scraper Proxy on port ${PORT}`);
   console.log(`========================================`);
   console.log(`  TMDB API key:    ${process.env.TMDB_API_KEY ? 'set ✓' : 'MISSING ✗'}`);
-  console.log(`  Sources enabled:`);
-  ALL_SOURCES.forEach(s => {
+  console.log(`  Embed providers: ${PROVIDERS.length}`);
+  PROVIDERS.forEach(p => console.log(`    ${p.priority}. ${p.name} (${p.supports.join('/')})`));
+  console.log(`  Hindi scrapers (last resort):`);
+  HINDI_SCRAPERS.forEach(s => {
     if (s.enabled()) console.log(`    ✓ ${s.name}`);
     else console.log(`    ✗ ${s.name} (disabled)`);
   });
