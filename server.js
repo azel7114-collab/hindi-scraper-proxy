@@ -19,8 +19,9 @@
 
 import express from 'express';
 import { getMovieMeta, getTvMeta, getEpisodeMeta } from './lib/tmdb.js';
-import { resolveMovie, resolveTv, clearCache, getCacheStats, PROVIDERS } from './lib/scraper.js';
+import { resolveMovie, resolveTv, clearCache, getCacheStats, PROVIDERS, REAL_SCRAPERS, LEGACY_SCRAPERS } from './lib/scraper.js';
 import { renderEmbedPage } from './lib/embed.js';
+import { isFlareSolverrEnabled, checkFlareSolverrHealth } from './lib/flaresolverr.js';
 import * as fzmovies from './lib/sources/fzmovies.js';
 import * as bollyflix from './lib/sources/bollyflix.js';
 import * as moviesflix from './lib/sources/moviesflix.js';
@@ -28,16 +29,15 @@ import * as hiiduba from './lib/sources/hiiduba.js';
 import * as mlsbd from './lib/sources/mlsbd.js';
 import * as mkvcinemas from './lib/sources/mkvcinemas.js';
 import * as minoplres from './lib/sources/minoplres.js';
-import * as vegamovies from './lib/sources/vegamovies.js';
 import * as watchhentai from './lib/sources/watchhentai.js';
 import * as watchmovies from './lib/sources/watchmovies.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Hindi scrapers (last resort) — user-requested first
-const HINDI_SCRAPERS = [
-  vegamovies, mlsbd, watchmovies, mkvcinemas, minoplres, watchhentai,
+// Legacy placeholder scrapers (mostly dead, kept for backward compat)
+const LEGACY_SCRAPERS_OLD = [
+  mlsbd, watchmovies, mkvcinemas, minoplres, watchhentai,
   fzmovies, bollyflix, moviesflix, hiiduba,
 ];
 
@@ -63,12 +63,14 @@ app.get('/', (req, res) => {
   const base = `${proto}://${host}`;
 
   const enabledProviders = PROVIDERS;
-  const enabledScrapers = HINDI_SCRAPERS.filter(s => s.enabled());
+  const enabledRealScrapers = REAL_SCRAPERS.filter(s => !(s.enabled && !s.enabled()));
+  const enabledLegacyScrapers = LEGACY_SCRAPERS_OLD.filter(s => s.enabled && s.enabled());
+  const flareOn = isFlareSolverrEnabled();
 
   res.type('html').send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hindi Scraper Proxy v3</title>
+<title>Hindi Scraper Proxy v4.0</title>
 <style>
   body { font-family:system-ui,Segoe UI,Roboto,sans-serif; max-width:780px; margin:40px auto; padding:0 20px; color:#222; }
   h1 { color:#e50d75; margin-bottom:6px; }
@@ -82,8 +84,8 @@ app.get('/', (req, res) => {
   a { color:#e50d75; }
   .warn { background:#fef3c7; padding:12px; border-radius:6px; font-size:13px; margin-top:18px; }
 </style></head><body>
-<h1>Hindi Scraper Proxy <span class="badge">v3.0</span></h1>
-<p>Single URL that returns <strong>${enabledProviders.length}+ working embed providers in parallel</strong> (AllMovieLand, MultiEmbed, VidSrc, 2embed, SuperEmbed, etc.). User sees all servers in player UI — first one that loads wins. Falls back to ${enabledScrapers.length} Hindi site scrapers if all embeds fail.</p>
+<h1>Hindi Scraper Proxy <span class="badge">v4.0</span></h1>
+<p>Single URL that returns <strong>${enabledProviders.length} embed providers + ${enabledRealScrapers.length} real HTML scrapers</strong> in parallel. FlareSolverr is <strong>${flareOn ? 'ON ✓' : 'OFF (set FLARESOLVERR_URL to enable Cloudflare bypass)'}</strong>. Falls back to ${enabledLegacyScrapers.length} legacy scrapers if everything fails.</p>
 
 <h2>Paste these into corvique admin → Video source (auto-attach)</h2>
 <p><strong>Movie link:</strong></p>
@@ -97,10 +99,16 @@ app.get('/', (req, res) => {
   ${enabledProviders.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name}</td><td>${p.supports.join('/')}</td><td>${p.priority}</td></tr>`).join('')}
 </table>
 
-<h2>Hindi Site Scrapers (last resort if all embeds fail)</h2>
+<h2>Real HTML Scrapers (Option B — run in parallel with embeds)</h2>
+<table>
+  <tr><th>#</th><th>Source</th><th>FlareSolverr</th></tr>
+  ${enabledRealScrapers.map((s, i) => `<tr><td>${i + 1}</td><td>${s.name}</td><td>${flareOn ? '<span class="badge">on</span>' : '<span class="badge fallback">off</span>'}</td></tr>`).join('') || '<tr><td colspan=3><em>none enabled</em></td></tr>'}
+</table>
+
+<h2>Legacy Placeholder Scrapers (mostly dead, last resort)</h2>
 <table>
   <tr><th>#</th><th>Source</th><th>Enabled</th></tr>
-  ${enabledScrapers.map((s, i) => `<tr><td>${i + 1}</td><td>${s.name}</td><td><span class="badge">enabled</span></td></tr>`).join('')}
+  ${enabledLegacyScrapers.map((s, i) => `<tr><td>${i + 1}</td><td>${s.name}</td><td><span class="badge">enabled</span></td></tr>`).join('')}
 </table>
 
 <h2>Test</h2>
@@ -125,12 +133,16 @@ app.get('/', (req, res) => {
 });
 
 // ---- Health ----
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
+  const fsHealth = await checkFlareSolverrHealth();
   res.json({
     status: 'ok',
+    version: '4.0',
     tmdb: !!process.env.TMDB_API_KEY,
     embedProviders: PROVIDERS.map(p => p.name),
-    hindiScrapers: HINDI_SCRAPERS.filter(s => s.enabled()).map(s => s.name),
+    realScrapers: REAL_SCRAPERS.map(s => s.name),
+    legacyScrapers: LEGACY_SCRAPERS_OLD.filter(s => s.enabled && s.enabled()).map(s => s.name),
+    flareSolverr: fsHealth,
     uptime: process.uptime(),
   });
 });
@@ -139,11 +151,13 @@ app.get('/health', (_req, res) => {
 app.get('/sources', (_req, res) => {
   res.json({
     embedProviders: PROVIDERS,
-    hindiScrapers: HINDI_SCRAPERS.filter(s => s.enabled()).map(s => ({
+    realScrapers: REAL_SCRAPERS.map(s => ({ id: s.id, name: s.name, enabled: !(s.enabled && !s.enabled()) })),
+    legacyScrapers: LEGACY_SCRAPERS_OLD.filter(s => s.enabled && s.enabled()).map(s => ({
       id: s.id,
       name: s.name,
       enabled: s.enabled(),
     })),
+    flareSolverrEnabled: isFlareSolverrEnabled(),
   });
 });
 
@@ -272,10 +286,13 @@ app.listen(PORT, () => {
   console.log(`  TMDB API key:    ${process.env.TMDB_API_KEY ? 'set ✓' : 'MISSING ✗'}`);
   console.log(`  Embed providers: ${PROVIDERS.length}`);
   PROVIDERS.forEach(p => console.log(`    ${p.priority}. ${p.name} (${p.supports.join('/')})`));
-  console.log(`  Hindi scrapers (last resort):`);
-  HINDI_SCRAPERS.forEach(s => {
-    if (s.enabled()) console.log(`    ✓ ${s.name}`);
+  console.log(`  Real scrapers (Option B):`);
+  REAL_SCRAPERS.forEach(s => console.log(`    ✓ ${s.name}`));
+  console.log(`  Legacy scrapers (mostly dead, last resort):`);
+  LEGACY_SCRAPERS_OLD.forEach(s => {
+    if (s.enabled && s.enabled()) console.log(`    ✓ ${s.name}`);
     else console.log(`    ✗ ${s.name} (disabled)`);
   });
+  console.log(`  FlareSolverr: ${isFlareSolverrEnabled() ? 'ON (' + process.env.FLARESOLVERR_URL + ')' : 'OFF (set FLARESOLVERR_URL to enable)'}`);
   console.log(`========================================\n`);
 });

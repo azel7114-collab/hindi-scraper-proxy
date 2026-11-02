@@ -1,0 +1,72 @@
+# docker-compose.yml
+# Hindi Scraper Proxy v4.0 + FlareSolverr (Cloudflare bypass)
+#
+# Usage:
+#   1. Copy .env.example → .env, fill in TMDB_API_KEY
+#   2. docker compose up -d --build
+#   3. Set in Render/Railway env: FLARESOLVERR_URL=http://flaresolverr:8191/v1
+#   4. Test: curl http://localhost:3000/health
+#
+# Deploy:
+#   - Railway: connect repo, set TMDB_API_KEY, deploy this compose as 2 services
+#   - Hetzner/DO VPS: docker compose up -d, reverse proxy with Caddy/nginx
+#   - Render: NO FlareSolverr support (no Docker on free tier)
+#     Use Render only for the Node app, set FLARESOLVERR_URL to a separate VPS
+
+version: '3.8'
+
+services:
+  # ---- Main Node.js app ----
+  proxy:
+    build: .
+    container_name: hindi-scraper-proxy
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - PORT=3000
+      - CACHE_TTL=${CACHE_TTL:-1800}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - REAL_SCRAPER_TIMEOUT=${REAL_SCRAPER_TIMEOUT:-15000}
+      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
+      - FLARESOLVERR_TIMEOUT=${FLARESOLVERR_TIMEOUT:-30000}
+      - FLARESOLVERR_RETRIES=${FLARESOLVERR_RETRIES:-2}
+      - ENABLE_VEGAMOVIES_REAL=true
+    depends_on:
+      - flaresolverr
+    networks:
+      - proxy-net
+
+  # ---- FlareSolverr — Cloudflare bypass service ----
+  # Runs a real Chromium browser to solve Cloudflare challenges.
+  # Memory-heavy (~300MB) — needs at least 1GB total RAM on host.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - TZ=UTC
+      # Optional: increase if Cloudflare challenges timeout
+      - BROWSER_TIMEOUT=40000
+    ports:
+      - "8191:8191"  # expose for direct testing if needed
+    # Memory limit to prevent OOM on small VPS
+    mem_limit: 512m
+    memswap_limit: 1g
+    cap_add:
+      - SYS_ADMIN  # needed for Chromium sandbox
+    networks:
+      - proxy-net
+    # Health check — restart if not responding
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8191/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  proxy-net:
+    driver: bridge

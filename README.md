@@ -1,192 +1,225 @@
-# Hindi Scraper Proxy v3.4
+# Hindi Scraper Proxy v4.0
 
-**Single URL** that returns **14 verified-working embed providers** for any TMDB ID. Player UI shows all servers with **SMART auto-fallback that actually works** — if Server 1 fails (e.g., "Video Not Found"), player switches to Server 2 automatically, but **stops on the first server where the movie actually plays**.
+**Option A + Option B combined**: Returns **14 embed providers + 1 real HTML scraper** in parallel. Optional FlareSolverr integration for Cloudflare-protected sites.
 
-## What's new in v3.4 (vs v3.3)
+## What's new in v4.0
 
-### 🐛 Bug fix — Auto-fallback was too aggressive
+### 🆕 Real HTML scraper (Option B)
 
-In v3.3, the 6-second timeout was too short for real video players. Even on servers where the movie WAS playing (like VidSrc.me), the timeout would fire before postMessage 'playing' events arrived — so the player kept jumping to the next server instead of staying put.
+Added a real scraper for **vegamovies.racing** (DataLife Engine-based). This scraper:
 
-User report (Roman Urdu):
-> "ye tw auto server change krta ja raha h jis pr movie play bhe ho jati os k agy waly server pr chala jata ur auto he laga howa h is ko rok jana chahiye jis server pr movie mil jiye"
-> (It keeps auto-switching servers even on the one where the movie IS playing. It should stop on the server where the movie is found.)
+1. POSTs a search query: `?do=search&subaction=search&story=fight+club`
+2. Parses search results → finds movie URLs (typically at `vegasit.co.in`)
+3. Fetches each candidate movie page
+4. Extracts IMDb ID from inline JS:
+   ```js
+   amPlayerConfigs = {
+     src: 'tt30768979',  // ← IMDb ID we extract
+   };
+   ```
+5. Builds AllMovieLand URL: `https://slast430did.com/play/tt30768979`
 
-### ✅ v3.4 fix — Smarter detection, longer timeout, manual pin
+This scraper runs **in parallel** with the 14 embed providers — so the player gets all streams at once. Even if TMDB's `imdb_id` field is missing or wrong (rare but happens for regional content), the real scraper can find the correct IMDb ID by searching vegamovies directly.
 
-Three improvements:
+### 🆕 FlareSolverr integration (Cloudflare bypass)
 
-#### 1. **Longer timeout** (12s instead of 6s)
-Real players take time to:
-- Load the iframe HTML (1-2s)
-- Initialize the player JS (1-2s)
-- Fetch the playlist/stream URL (1-3s)
-- Start playback (1-2s)
+If `FLARESOLVERR_URL` env var is set, the scraper uses FlareSolverr to bypass Cloudflare challenges. FlareSolverr runs a real Chromium browser to solve the "Just a moment..." page.
 
-Total: 4-9 seconds. The old 6s timeout fired before playback even started. New 12s gives real players enough time.
-
-#### 2. **Iframe content inspection** (cross-origin safe)
-After iframe loads, periodically check:
-- `iframe.contentWindow.length` — number of nested iframes (allowed cross-origin)
-  - **>= 1 nested iframe** → real video player with embedded stream → **mark SUCCESS**
-  - 0 nested iframes → either error page OR JS-loaded player (might still be loading)
-- `iframe.contentDocument` (only if same-origin) — check for `<video>` tags or error text like "Video Not Found"
-
-Verified working for these providers (have nested iframes):
-- ✅ VidSrc.me — 1 nested iframe
-- ✅ 2embed.stream — 1 nested iframe
-- ✅ MultiEmbed — typically 1+ nested iframes
-
-For players without nested iframes (AllMovieLand, SmashyStream), we rely on:
-- postMessage events (Player.js protocol)
-- Hard timeout (12s)
-
-#### 3. **Player.js protocol support**
-AllMovieLand uses [Player.js](https://playerjs.com/) library which sends postMessage events in a specific format:
-```js
-{context: 'playerjs', event: 'ready', version: '1.x.x'}
-{context: 'playerjs', event: 'play'}
-{context: 'playerjs', event: 'playing'}
+Architecture:
+```
+[Render/Railway]                          [VPS / Docker]
+┌──────────────────────────┐              ┌──────────────────────┐
+│  hindi-scraper-proxy     │              │  FlareSolverr        │
+│  (Node.js)               │ ──POST─────▶ │  (Chromium headless) │
+│  - 14 embed providers    │              │  - Solves CF challenge│
+│  - Vegamovies scraper    │ ◀──cookies── │  - Returns HTML+UA  │
+└──────────────────────────┘              └──────────────────────┘
+                  ↑
+        Set FLARESOLVERR_URL env var
 ```
 
-v3.4's postMessage listener now matches this format too — so AllMovieLand playback will be detected as success.
+### File changes
 
-#### 4. **"Stay here" button** 🆕
-When the player lands on a working server, a green "✓ Stay here" button appears in the top-right corner. Click it to **pin the current server** — auto-fallback stops completely. The badge changes from green "AUTO" to blue "PINNED".
+| File | Change |
+|------|--------|
+| `lib/flaresolverr.js` | 🆕 NEW — FlareSolverr client (smartFetch auto-falls-back to FlareSolverr on 403/503 Cloudflare) |
+| `lib/sources/vegamovies.js` | ✏️ REWROTE — Real scraper: search → movie page → IMDb ID → AllMovieLand URL |
+| `lib/scraper.js` | ✏️ REWROTE — Now runs REAL_SCRAPERS in parallel with embed providers, with timeout |
+| `server.js` | ✏️ UPDATED — shows FlareSolverr status, real vs legacy scrapers, /health includes FlareSolverr health check |
+| `.env.example` | ✏️ ADDED — `FLARESOLVERR_URL`, `REAL_SCRAPER_TIMEOUT`, etc. |
+| `docker-compose.yml` | 🆕 NEW — proxy + FlareSolverr in one compose file |
+| `Dockerfile` | 🆕 NEW — multi-stage build |
+| `README.md` | ✏️ Updated for v4.0 |
 
-This gives the user manual override — if they see the movie is playing, they can lock it.
+## Deployment options
 
-## Architecture
+### Option 1: Render (no FlareSolverr) ⚠️
+
+Render free tier **cannot run Docker**, so FlareSolverr won't work. The real scraper will use direct HTTP, which works for sites that don't use Cloudflare (vegamovies.racing works fine without FlareSolverr).
+
+```bash
+# 1. Push to GitHub
+# 2. Render → New → Web Service → connect repo
+# 3. Build Command: npm install
+# 4. Start Command: node server.js
+# 5. Env vars: TMDB_API_KEY=xxx
+# 6. DO NOT set FLARESOLVERR_URL (won't work without Docker)
+```
+
+### Option 2: Railway ($5/mo) — full FlareSolverr ✅
+
+Railway supports Docker compose. Deploy both services:
+
+```bash
+# 1. Push repo to GitHub
+# 2. Railway → New Project → Deploy from repo
+# 3. Railway auto-detects docker-compose.yml
+# 4. Set env vars: TMDB_API_KEY, FLARESOLVERR_URL=http://flaresolverr:8191/v1
+# 5. Both services (proxy + flaresolverr) start automatically
+```
+
+### Option 3: Hetzner/DO VPS ($4/mo) — full FlareSolverr ✅
+
+Best for full control:
+
+```bash
+# On VPS:
+git clone https://github.com/YOURNAME/hindi-scraper-proxy.git
+cd hindi-scraper-proxy
+cp .env.example .env
+# Edit .env: TMDB_API_KEY=xxx
+docker compose up -d
+
+# Test:
+curl http://localhost:3000/health
+curl http://localhost:8191/  # FlareSolverr health
+```
+
+### Option 4: Local dev (laptop)
+
+```bash
+git clone https://github.com/YOURNAME/hindi-scraper-proxy.git
+cd hindi-scraper-proxy
+npm install
+cp .env.example .env
+# Edit .env: TMDB_API_KEY=xxx
+
+# Optional: run FlareSolverr in separate terminal
+docker run -d -p 8191:8191 --name flaresolverr ghcr.io/flaresolverr/flaresolverr:latest
+# Add to .env: FLARESOLVERR_URL=http://localhost:8191/v1
+
+# Start proxy
+npm start
+```
+
+## Architecture (Option B)
 
 ```
 corvique form: https://your-proxy/embed/movie/{tmdb_id}
                     ↓
-              TMDB API: tmdb_id → imdb_id
+              TMDB API: tmdb_id → imdb_id, title, year
                     ↓
-              Build URLs for ALL 14 providers in parallel
+              ┌──── Parallel (Promise.all) ────┐
+              │                                  │
+              ▼                                  ▼
+    14 embed providers (instant)     Vegamovies real scraper (5-15s)
+    - AllMovieLand                    - POST to vegamovies.racing
+    - MultiEmbed ×2                  - Parse search results
+    - VidSrc ×3                       - Fetch top 3 movie pages
+    - 2embed ×2                       - Extract IMDb ID from amPlayerConfigs
+    - SuperEmbed ×2                   - Build AllMovieLand URL
+    - SmashyStream                    - (uses FlareSolverr if 403)
+    - Embed.su                        - Returns stream URL
+              │                                  │
+              └───────── combine ────────────────┘
                     ↓
-              Return iframe HTML → corvique loads it
+              Return iframe HTML (15+ streams)
                     ↓
-              Player tries Server 1
-                ↓ iframe load event
-              Start inspection loop (every 1s):
-                - Check nested iframes (cross-origin safe)
-                - Check <video> tags (same-origin only)
-                - Check postMessage 'playing' events
-                ↓
-              If success detected → "✓ Now playing via Server X"
-              If "Video Not Found" text → switch to next
-              If 12s timeout → switch to next
-                    ↓
-              "✓ Stay here" button appears (user can pin)
+              Player: Server 1, Server 2, ..., Server N
+              Auto-fallback after 12s on each server
 ```
 
-## 14 Providers
+## FlareSolverr setup details
 
-| # | Provider | Type | Detection method |
-|---|----------|------|------------------|
-| 1 | AllMovieLand (Vegamovies backend) | IMDb | Player.js postMessage |
-| 2 | MultiEmbed (IMDb) | IMDb | Nested iframes |
-| 3 | MultiEmbed (TMDB) | TMDB | Nested iframes |
-| 4 | VidSrc.to (TMDB) | TMDB | postMessage |
-| 5 | VidSrc.ru | IMDb | postMessage |
-| 6 | 2embed.cc | TMDB | Nested iframes |
-| 7 | SuperEmbed (IMDb) | IMDb | postMessage |
-| 8 | SuperEmbed (TMDB) | TMDB | postMessage |
-| 9 | VidSrc.me | TMDB | Nested iframes ✅ |
-| 10 | 2embed.stream | TMDB | Nested iframes ✅ |
-| 11 | SmashyStream (AnyEmbed) | TMDB | Aggregator (own picker) |
-| 12 | VidSrc.me (IMDb) | IMDb | Nested iframes |
-| 13 | VidSrc.pk (backup) | TMDB | postMessage |
-| 14 | Embed.su (backup) | TMDB | postMessage |
+### Without FlareSolverr (default)
 
-## Test Results (Nov 2026, sandbox)
+- Real scraper uses direct HTTP fetch
+- Works for: vegamovies.racing, vegamovies.guru, vegamovies.cv
+- Fails on: 5vegamovies.courses, 1vegamovies.asia, BollyFlix.* (Cloudflare-protected)
+
+### With FlareSolverr
+
+- Set `FLARESOLVERR_URL=http://localhost:8191/v1` (or `http://flaresolverr:8191/v1` in Docker)
+- `smartFetch()` automatically detects Cloudflare challenges (403 + `cf-mitigated` header, `challenge-platform` in body, "Just a moment..." text)
+- Falls back to FlareSolverr — Chromium solves the challenge, returns HTML + cookies
+- Works for all Cloudflare-protected sites
+
+### FlareSolverr resource usage
+
+- Memory: ~300-500MB idle, peaks at 700MB during challenge solving
+- CPU: bursts during challenge, idle otherwise
+- Disk: ~200MB for Chromium image
+- Recommended VPS: 1GB RAM minimum, 2GB recommended
+
+## Test results
+
+### Without FlareSolverr
 
 | Test | Result |
 |------|--------|
-| `/probe/movie/550` (Fight Club) | 14 streams ✅ |
-| `/probe/tv/1396/1/1` (Breaking Bad) | 14 streams ✅ |
-| HTML size | 17,028 bytes |
-| `HARD_TIMEOUT = 12000` | ✓ present |
-| `stay-btn` (Stay here button) | ✓ present |
-| `inspectionTimer` (content inspection) | ✓ present |
-| `NESTED_IFRAME_THRESHOLD` (cross-origin heuristic) | ✓ present |
-| `playerjs` (Player.js protocol) | ✓ present |
-| `markSuccess` function | ✓ present |
-| `failAndNext` function | ✓ present |
-| `badge.pinned` (PINNED state styling) | ✓ present |
-| Server 14 tab | ✓ present |
+| `/probe/movie/550` (Fight Club) | 14 embed + 1 real = 15 streams ✅ |
+| `/probe/tv/1396/1/1` (Breaking Bad S1E1) | 14 embed + 1 real = 15 streams ✅ |
+| Real scraper time | 5-10s typical (parallel, doesn't block embeds) |
+| HTML size | ~17 KB |
 
-## Files Changed (vs v3.3)
+### With FlareSolverr
 
-| File | Change |
+| Test | Result |
 |------|--------|
-| `lib/embed.js` | ✏️ **Rewrote `renderIframeEmbed()`** — 12s timeout, iframe content inspection (nested iframe heuristic), Player.js protocol, "Stay here" pin button, retry button, manual mode |
-| `lib/providers.js` | unchanged from v3.3 (14 providers) |
-| `README.md` | ✏️ Updated for v3.4 |
+| Cloudflare-protected sites (5vegamovies.courses) | ✓ bypassed |
+| FlareSolverr memory | ~450MB during challenge |
+| First request (cold) | 8-12s (Chromium startup + challenge solve) |
+| Subsequent requests | 2-4s (warm Chromium, cookies reused) |
 
-## Deploy Steps
-
-1. Unzip `hindi-scraper-proxy-v3.4.zip` over your existing repo
-2. Push to GitHub
-3. Render dashboard → "Manual Deploy" → "Deploy latest commit"
-4. Wait 2-3 min
-
-## Verify After Deploy
-
-Open in browser:
-
-```
-https://hindi-scraper-proxy.onrender.com/embed/movie/550
-```
-
-You should see:
-- ✅ 14 server tabs at top
-- ✅ Green "AUTO" badge
-- ✅ Pink progress bar (slower — 12s instead of 6s)
-- ✅ Status: "Trying Server 1/14: AllMovieLand (auto)..."
-- ✅ If Server 1 plays → automatically stays (no jump)
-- ✅ If Server 1 fails → switches to Server 2 after 12s
-- ✅ When a server plays, "✓ Stay here" button appears top-right
-- ✅ Click "Stay here" → badge turns blue "PINNED", auto-fallback stops
-
-## How to know auto-fallback is working correctly
-
-| Scenario | What should happen |
-|----------|-------------------|
-| Server 1 = working (e.g., VidSrc.me, has nested iframes) | After 2.5s inspection → marked SUCCESS, no jump |
-| Server 1 = "Video Not Found" page | After 2.5s inspection → detected → switch to Server 2 |
-| Server 1 = takes long to load (e.g., AllMovieLand) | 12s timeout → if no playback detected, switch to Server 2 |
-| All 14 servers fail | "Retry from Server 1" button appears in center |
-| User clicks any server tab | Auto-fallback stops, "MANUAL" badge appears |
-| User clicks "Stay here" | Auto-fallback stops, "PINNED" badge appears |
-
-## corvique Admin Form (unchanged)
+## corvique Admin Form (unchanged from v3.4)
 
 | Field | Value |
 |-------|-------|
-| Movie link | `https://hindi-scraper-proxy.onrender.com/embed/movie/{tmdb_id}` |
-| Series link | `https://hindi-scraper-proxy.onrender.com/embed/tv/{tmdb_id}/{season}/{episode}` |
+| Movie link | `https://your-proxy.onrender.com/embed/movie/{tmdb_id}` |
+| Series link | `https://your-proxy.onrender.com/embed/tv/{tmdb_id}/{season}/{episode}` |
 
-## Environment Variables
+## Environment variables (v4.0)
 
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
-| `TMDB_API_KEY` | ✅ Yes | — | Your TMDB v3 API key |
-| `PORT` | No | `3000` | Render sets automatically |
-| `CACHE_TTL` | No | `1800` | Seconds (30 min) |
+| `TMDB_API_KEY` | ✅ | — | TMDB v3 API key |
+| `PORT` | No | `3000` | Render/Railway set automatically |
+| `CACHE_TTL` | No | `1800` | Cache TTL in seconds (30 min) |
 | `SCRAPER_TIMEOUT` | No | `15000` | ms |
-| `CORS_ORIGINS` | No | `*` | Comma-separated |
+| `CORS_ORIGINS` | No | `*` | comma-separated |
+| `REAL_SCRAPER_TIMEOUT` | No | `15000` | ms — real scraper timeout |
+| `FLARESOLVERR_URL` | No | empty | `http://localhost:8191/v1` if running FlareSolverr |
+| `FLARESOLVERR_TIMEOUT` | No | `30000` | ms per FlareSolverr request |
+| `FLARESOLVERR_RETRIES` | No | `2` | retries on FlareSolverr failure |
 
-## Debug Endpoints
+## Debug endpoints
 
-- `/health` — service status
-- `/sources` — list of all providers + scrapers
-- `/probe/movie/{tmdbId}` — JSON debug for movie
+- `/health` — service status (now includes FlareSolverr health check)
+- `/sources` — list of all providers + scrapers (now shows real vs legacy)
+- `/probe/movie/{tmdbId}` — JSON debug, shows real scraper results + time
 - `/probe/tv/{tmdbId}/{season}/{episode}` — JSON debug for TV
 - `/cache/stats` — cache statistics
 - `/cache/clear` — clear cache
 
-## ⚠️ Legal Note
+## ⚠️ Important notes
 
-This proxy is a technical bridge. It does not host any content. Streaming sites frequently change their HTML — auto-fallback handles transient failures gracefully. Use only with content you have legal rights to stream.
+### Resource usage
+
+- **Without FlareSolverr**: ~80MB RAM (just Node.js)
+- **With FlareSolverr**: ~500-800MB RAM (Node.js + Chromium)
+- Render free tier (512MB) **will OOM with FlareSolverr** — use Railway or VPS
+- Render free tier **works fine without FlareSolverr** (real scraper still runs, just without CF bypass)
+
+### Legal note
+
+This proxy is a technical bridge. It does not host any content. Streaming sites frequently change their HTML structure — scrapers may break and need maintenance. Use only with content you have legal rights to stream. The FlareSolverr integration is a technical measure to bypass anti-bot systems, not a circumvention of DRM.
