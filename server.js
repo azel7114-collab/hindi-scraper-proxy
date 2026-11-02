@@ -25,12 +25,21 @@ import * as fzmovies from './lib/sources/fzmovies.js';
 import * as bollyflix from './lib/sources/bollyflix.js';
 import * as moviesflix from './lib/sources/moviesflix.js';
 import * as hiiduba from './lib/sources/hiiduba.js';
+import * as mlsbd from './lib/sources/mlsbd.js';
+import * as mkvcinemas from './lib/sources/mkvcinemas.js';
+import * as minoplres from './lib/sources/minoplres.js';
+import * as vegamovies from './lib/sources/vegamovies.js';
+import * as watchhentai from './lib/sources/watchhentai.js';
+import * as watchmovies from './lib/sources/watchmovies.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Hindi scrapers (last resort)
-const HINDI_SCRAPERS = [fzmovies, bollyflix, moviesflix, hiiduba];
+// Hindi scrapers (last resort) — user-requested first
+const HINDI_SCRAPERS = [
+  vegamovies, mlsbd, watchmovies, mkvcinemas, minoplres, watchhentai,
+  fzmovies, bollyflix, moviesflix, hiiduba,
+];
 
 // CORS
 app.use((req, res, next) => {
